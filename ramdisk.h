@@ -12,18 +12,29 @@
 #define BLOCK_SIZE 512    /*Bytes */
 #define PATH_MAX 127      /* Bytes */
 
-int size; /* Size of filesystem*/
+#define handle_error(msg) \
+        do { perror(msg); return(-1); } while (0)
+
+int gsize; /* Global Size of filesystem*/
 int pages; /* size of file_system / page_size */
-int metadata_pages = 512; /* Metadata having inodes */
-/* Total storage used for inodes = 512 * 4096 = 2MB*/
-int data_pages; /* pages - metadata_pages; */
-uint16_t max_inode = 8192;   /* 512 * 4096 / sizeof(inode) */
+int metadata_pages; /* Metadata having inodes */
+/* Total storage used for inodes = metadata_pages * 4096 = 2MB*/
+int data_pages; /* pages - metadata_pages */
+
+struct ino_metadata {
+    uint16_t bitmap; /*MSB is don't care */
+    /* We lose 254 bytes per metapage here */
+};
+
+uint16_t max_inode; /*metadata_pages * (PAGE_SIZE - sizeof(inode)) / sizeof(inode) */ 
 
 struct page_metadata {
     uint8_t bitmap; /* PAGE_SIZE / BLOCK_SIZE. MSB bit is don't care 
                     If the bit is set then the corresponding block is occupied*/
     /* We lose 511 bytes per page here */
 };
+
+int space_waste;
 
 struct inode {
     uint8_t path_name[PATH_MAX];
@@ -42,3 +53,11 @@ struct inode {
 };  /* Size of inode is 256 */
 
 struct inode * root_inode;
+
+/* Memory map struct*/
+struct mem_map {
+    void * addr;
+    off_t size;
+};
+
+struct mem_map * map;
