@@ -7,6 +7,10 @@
 #include <sys/uio.h>
 #include <sys/ioctl.h>
 #include <stdint.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <stdlib.h>
+#include <errno.h>
 
 #define PAGE_SIZE 4096    /*Bytes */
 #define BLOCK_SIZE 512    /*Bytes */
@@ -37,7 +41,7 @@ struct page_metadata {
 int space_waste;
 
 struct inode {
-    uint8_t path_name[PATH_MAX];
+    char path_name[PATH_MAX];
     uint8_t  ftype; /* Directory or File */
     uint16_t ino; /* Inode number */
     size_t size; /* Size in bytes */
@@ -61,3 +65,19 @@ struct mem_map {
 };
 
 struct mem_map * map;
+
+
+
+/* Function declarations */
+static int write_bytes_from_oft(struct inode *ino, char * buf, int offset_block_ind, off_t offset, size_t bytes);
+
+static int allocate_blocks(struct inode *ino, size_t old_size, size_t new_size);
+
+int fetch_offset_blocknum(struct inode * ino, off_t offset);
+
+int fetch_offset_blocknum(struct inode * ino, off_t offset);
+int find_free_block_num();
+
+void fetch_data_from_block(char * buf, int blocknum, size_t size);
+void write_data_to_block(char *buf, int blocknum, size_t size);
+struct inode * get_inode_from_number(int ino);
