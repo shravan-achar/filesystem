@@ -22,30 +22,33 @@ static int ramdisk_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
 {
     struct inode * ino = 0, * ino_c = 0;
     uint16_t child_ino;
+    char path_copy[PATH_MAX];
+    memset(path_copy, 0, PATH_MAX);
 
     ino = get_inode_from_path(path);
     
     /* Get all children */
-    /* TODO: Convert all pathnames to filenames */
-    if (ino) {
+    if (!errno) 
+    { 
+        strncpy(path_copy, ino->path_name, PATH_MAX);
+
         if (ino->ftype == 1) /* Its a file */
         {
-            filler(buf, ino->path_name, NULL, 0);
+            filler(buf, basename(path_copy), NULL, 0);
         } else { 
             filler(buf,".", NULL, 0);
             filler(buf,"..", NULL, 0);
-            
+
             child_ino = ino->child_ino;
             while (child_ino != 0) { /* Root inode can not be child of anyone */
                 ino_c = get_inode_from_number(child_ino);
-                filler(buf, ino_c->path_name, NULL, 0);
+                filler(buf, basename(ino_c->path_name), NULL, 0);
                 child_ino = ino_c->sibling_ino;
             }
         }
         return 0;
-    }
-    
-    return -1;
+    }    
+    return -errno;
 
 }
 
@@ -88,17 +91,45 @@ static int ramdisk_rmdir(const char * path)
     
     ino_p = get_inode_from_path(path);
     if (!ino_p) return -ENOENT;
+    if (ino_p->ftype == 1) return -ENOTDIR;
+    if (ino_p->child_ino != 0) return -EISDIR;
     
     par_ino_p = get_inode_from_number(ino_p->parent_ino);
     if (!par_ino_p) return -ENOENT; /* Something is really wrong */
-
-    if (par_ino_p->child_ino != 0) return -EISDIR;
+    if (par_ino_p->ftype == 1) return -ENOTDIR; /* How did this happen? */
 
     remove_from_child_list(par_ino_p, ino_p->ino);
 
     /*Remove from file*/
     remove_inode_from_file(ino_p);
 
+    /*Remove metadata*/
+    ino_m = get_metadata_from_num(ino_p->ino);
+    update_metadata_del(ino_m, ino_p->ino);
+
+    return 0;
+
+}
+
+static int ramdisk_unlink(const char * path)
+{
+    struct inode * ino_p = 0, * par_ino_p = 0;
+    struct ino_metadata * ino_m = 0;
+    
+    ino_p = get_inode_from_path(path);
+    if (!ino_p) return -ENOENT;
+    if (ino_p->ftype == 0) return -EISDIR;
+    
+    par_ino_p = get_inode_from_number(ino_p->parent_ino);
+    if (!par_ino_p) return -ENOENT; /* Something is really wrong */
+    if (par_ino_p->ftype == 1) return -ENOTDIR; /* How did this happen? */
+
+    remove_from_child_list(par_ino_p, ino_p->ino);
+
+    /*Remove from file*/
+    remove_inode_from_file(ino_p);
+
+    /*Remove metadata*/
     ino_m = get_metadata_from_num(ino_p->ino);
     update_metadata_del(ino_m, ino_p->ino);
 
@@ -109,25 +140,31 @@ static int ramdisk_rmdir(const char * path)
 static int ramdisk_mkdir(const char * path, mode_t mode)
 {
     /* Create inode entry*/
-    struct inode * ino_p = 0, * par_ino = 0;
+    struct inode * ino_p = 0, * par_ino_p = 0;
     struct ino_metadata * ino_m = 0;
     uint16_t ino_num = 0;
+    char parent_dir[PATH_MAX];
+
+    memset(parent_dir, 0, PATH_MAX);
     
     ino_p = get_inode_from_path(path); 
-    if (ino_p) handle_error("Dir exists");
+    if (ino_p) return -EEXIST;
 
-    par_ino = get_inode_from_number(ino_p->parent_ino);
-    if (!par_ino) handle_error("Invalid path");
+    strncpy(parent_dir, path, PATH_MAX);
+    par_ino_p = get_inode_from_path(dirname(parent_dir));
+    if (!par_ino_p) return -EINVAL;
+    if (par_ino_p->ftype == 1) return -ENOTDIR;
+    if (ino_p->parent_ino != par_ino_p->ino) return -EINVAL;
 
     ino_num = find_free_inode_num();
     if (ino_num) {
         ino_p = (struct inode *) calloc(1, sizeof(struct inode));
         ino_p->ino = ino_num;
-        ino_p->parent_ino = par_ino->ino;
+        ino_p->parent_ino = par_ino_p->ino;
         strncpy(ino_p->path_name, path, PATH_MAX);
         ino_p->size = sizeof(struct inode);
         ino_p->ftype = 0; /* Rest are all zero */
-        add_to_child_list (par_ino, ino_num);
+        add_to_child_list (par_ino_p, ino_num);
         
         /* Write to file */
         add_inode_to_file(ino_p);
@@ -141,6 +178,51 @@ static int ramdisk_mkdir(const char * path, mode_t mode)
 
     /* No free blocks if it comes here */
     return -ENOMEM;
+}
+
+static int ramdisk_create(const char * path, mode_t mode, struct fuse_file_info *fi)
+{
+    /* Create inode entry*/
+    struct inode * ino_p = 0, * par_ino_p = 0;
+    struct ino_metadata * ino_m = 0;
+    uint16_t ino_num = 0;
+    char parent_dir[PATH_MAX];
+
+    memset(parent_dir, 0, PATH_MAX);
+    
+    ino_p = get_inode_from_path(path); 
+    if (ino_p) return -EEXIST;
+
+    strncpy(parent_dir, path, PATH_MAX);
+    par_ino_p = get_inode_from_path(dirname(parent_dir));
+    if (!par_ino_p) return -EINVAL;
+    if (par_ino_p->ftype == 1) return -ENOTDIR;
+    if (ino_p->parent_ino != par_ino_p->ino) return -EINVAL;
+
+    ino_num = find_free_inode_num();
+    if (ino_num) {
+        ino_p = (struct inode *) calloc(1, sizeof(struct inode));
+        ino_p->ino = ino_num;
+        ino_p->parent_ino = par_ino_p->ino;
+        strncpy(ino_p->path_name, path, PATH_MAX);
+        ino_p->size = 0;
+        ino_p->ftype = 1;
+
+        add_to_child_list (par_ino_p, ino_num);
+        
+        /* Write to file */
+        add_inode_to_file(ino_p);
+        
+        /*Update metadata */
+        ino_m = get_metadata_from_num(ino_num);
+        update_metadata_add(ino_m, ino_num);
+        free(ino_p);
+        return 0; 
+    }
+
+    /* No free blocks if it comes here */
+    return -ENOMEM;
+
 }
 
 void remove_inode_from_file (struct inode * ino_p) 
@@ -455,10 +537,21 @@ void write_data_to_block(char *buf, int blocknum, size_t size)
 
 static int ramdisk_open(const char *path, struct fuse_file_info *fi) 
 {
-    if((fi->flags & 3) != O_RDONLY) return -EACCES;
-    if (get_inode_from_path(path))
-        return 0; 
-    else return -1;
+    //if((fi->flags & 3) != O_RDONLY) return -EACCES;
+    if (get_inode_from_path(path)) return 0; 
+    else return -ENOENT;
+}
+
+static int ramdisk_opendir(const char *path, struct fuse_file_info *fi) 
+{
+    struct inode * ino = 0;
+    //if((fi->flags & 3) != O_RDONLY) return -EACCES;
+    ino = get_inode_from_path(path);
+    if (!errno) {
+        if (ino->ftype == 0) return 0;
+        else return -ENOTDIR;
+    }
+    return -ENOENT;
 }
 
 struct inode * get_inode_from_number(int ino)
@@ -491,35 +584,38 @@ struct inode * get_inode_from_path(const char * path)
                                    (bitpos * sizeof(struct inode))); 
 
             if(!strcmp(ino->path_name, path)) {
+                errno = 0;
                 return ino;
             } 
 
         }
         pages++;
     }
+    errno = ENOENT;
     return NULL;
 }
 
 static struct fuse_operations ramdisk_oper = {
     //.init        = ramdisk_init,
     //.destroy     = ramdisk_destroy,
-    .read = ramdisk_read,
-    .open = ramdisk_open,
-    .write = ramdisk_write,
-    .readdir = ramdisk_readdir,
+    .read        = ramdisk_read,
+    .open        = ramdisk_open,
+    .write       = ramdisk_write,
+    .readdir     = ramdisk_readdir,
     .getattr     = ramdisk_getattr,
     .mkdir       = ramdisk_mkdir,
     .rmdir       = ramdisk_rmdir,
+    .unlink      = ramdisk_unlink,
+    .create      = ramdisk_create,
+    .opendir     = ramdisk_opendir,
     /*    .getattr     = ramdisk_getattr,
           .fgetattr    = ramdisk_fgetattr,
           .access      = ramdisk_access,
           .readlink    = ramdisk_readlink,
-          .readdir     = ramdisk_readdir,
           .mknod       = ramdisk_mknod,
           .mkdir       = ramdisk_mkdir,
           .symlink     = ramdisk_symlink,
           .unlink      = ramdisk_unlink,
-          .rmdir       = ramdisk_rmdir,
           .rename      = ramdisk_rename,
           .link        = ramdisk_link,
           .chmod       = ramdisk_chmod,
@@ -527,13 +623,11 @@ static struct fuse_operations ramdisk_oper = {
           .truncate    = ramdisk_truncate,
           .ftruncate   = ramdisk_ftruncate,
           .utimens     = ramdisk_utimens,
-          .create      = ramdisk_create,
           .open        = ramdisk_open,
           .read        = ramdisk_read,
           .write       = ramdisk_write,
           .statfs      = ramdisk_statfs,
           .release     = ramdisk_release,
-          .opendir     = ramdisk_opendir,
           .releasedir  = ramdisk_releasedir,
           .fsync       = ramdisk_fsync,
           .flush       = ramdisk_flush,
@@ -683,6 +777,7 @@ int main(int argc, char *argv[])
     printf("page %lu\n", sizeof(struct page_metadata));
     init_ramfs(argc, argv);
     init_globals(atoi(argv[2]));
-    //printf("Size %lu\n", sizeof(struct inode));
-    return fuse_main(argc, argv, &ramdisk_oper, NULL);
+    printf("Size %lu\n", sizeof(struct inode));
+    return 0;
+    //return fuse_main(argc, argv, &ramdisk_oper, NULL);
 }
