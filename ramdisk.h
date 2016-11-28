@@ -7,6 +7,11 @@
 #include <sys/uio.h>
 #include <sys/ioctl.h>
 #include <stdint.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <libgen.h>
 
 #define PAGE_SIZE 4096    /*Bytes */
 #define BLOCK_SIZE 512    /*Bytes */
@@ -24,6 +29,9 @@ int data_pages; /* pages - metadata_pages */
 struct ino_metadata {
     uint16_t bitmap; /*MSB is don't care */
     /* We lose 254 bytes per metapage here */
+    /* Using this space to store number of metadata and datapages*/
+    int datapages;
+    int metadatapages;
 };
 
 uint16_t max_inode; /*metadata_pages * (PAGE_SIZE - sizeof(inode)) / sizeof(inode) */ 
@@ -35,9 +43,10 @@ struct page_metadata {
 };
 
 int space_waste;
+int image_read;
 
 struct inode {
-    uint8_t path_name[PATH_MAX];
+    char path_name[PATH_MAX];
     uint8_t  ftype; /* Directory or File */
     uint16_t ino; /* Inode number */
     size_t size; /* Size in bytes */
@@ -61,3 +70,30 @@ struct mem_map {
 };
 
 struct mem_map * map;
+
+
+
+/* Function declarations */
+static int write_bytes_from_oft(struct inode *ino, char * buf, int offset_block_ind, off_t offset, size_t bytes);
+
+static int allocate_blocks(struct inode *ino, size_t old_size, size_t new_size);
+
+int fetch_offset_blocknum(struct inode * ino, off_t offset);
+
+int fetch_offset_blocknum(struct inode * ino, off_t offset);
+int find_free_block_num();
+
+void fetch_data_from_block(char * buf, int blocknum, size_t size);
+void write_data_to_block(char *buf, int blocknum, size_t size);
+struct inode * get_inode_from_number(int ino);
+struct inode * get_inode_from_path(const char * path);
+
+struct ino_metadata * get_metadata_from_num (uint16_t ino);
+int find_free_inode_num();
+void add_to_child_list (struct inode * par_ino, uint16_t new_child);
+
+void add_inode_to_file (struct inode * ino_p);
+void update_metadata_add (struct ino_metadata * ino_m, uint16_t ino);
+void update_metadata_del (struct ino_metadata * ino_m, uint16_t ino);
+void remove_from_child_list (struct inode * par_ino, uint16_t deleted_child);
+void remove_inode_from_file (struct inode * ino_p); 
