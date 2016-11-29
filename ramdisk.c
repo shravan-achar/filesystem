@@ -712,13 +712,13 @@ int init_ramfs (int argc, char *argv[])
         handle_error(strerror(errno));
     }
     if (sb.st_size < size) {
-        if (ftruncate(fd, size) < 0) {
+        if (ftruncate(fd, size + (1 * 1024 * 1024)) < 0) {
             /* This is bad */
             handle_error(strerror(errno));
         }
-    } else if (sb.st_size > size) {
+    } else if (sb.st_size > size + 1*1024*1024) {
         fprintf(stderr, "File system is larger than specified size. Current size is %uMB\n", (unsigned int) sb.st_size / (1024 * 1024));
-        return -1;
+        exit(-1);
     } 
     if ((addr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)) < 0) {
         handle_error(strerror(errno));
@@ -783,8 +783,9 @@ void init_root_ino () {
 void init_globals(int size) {
     gsize = size * 1024 * 1024;
     pages = gsize / PAGE_SIZE;
+    metadata_pages = 256;
     if (!image_read) {
-        metadata_pages = pages / 128; /* for a 512 MB fs, 4MB is for metadata. Min fs size is 512 KB */
+        metadata_pages += pages / 128; /* for a 512 MB fs, 4MB is for metadata. Min fs size is 512 KB */
         data_pages = pages - metadata_pages;
         init_metapages(0);
         init_root_ino();
