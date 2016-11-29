@@ -110,6 +110,48 @@ static int ramdisk_rmdir(const char * path)
 
 }
 
+/* Blocks can not be freed in between*/
+static int free_blocks(struct inode * ino, int blocks)
+{
+
+/* Free blocks from the end */
+if (!blocks) return 0;
+char buf[BLOCK_SIZE];
+memset(buf, 0, BLOCK_SIZE);
+
+/* Write zeros from the end */
+int block = 0; 
+int num_blocks = ino->num_blocks;
+
+while (blocks) {
+        block = ino->block_list[num_blocks - 1];
+	write_data_to_block(buf, block, BLOCK_SIZE);
+        ino->block_list[num_blocks - 1] = 0;
+        ino->size -= BLOCK_SIZE;
+        blocks--;
+        num_blocks--;
+}
+
+ino->num_blocks = num_blocks;
+return 0;
+}
+
+static int ramdisk_truncate(const char * path, off_t size) 
+{
+   struct inode * ino_p = 0;
+   int blocks_to_free = 0, rc = 0;
+   ino_p = get_inode_from_path(path);
+
+   if (size > ino_p->size) {
+      rc = allocate_blocks(ino_p, ino_p->size, size);
+   } else if (size < ino_p->size) {
+      blocks_to_free = ino_p->size / BLOCK_SIZE - size / BLOCK_SIZE;
+rc = free_blocks(ino_p, blocks_to_free);
+   } else return 0;
+return rc;
+   
+}
+
 static int ramdisk_unlink(const char * path)
 {
     struct inode * ino_p = 0, * par_ino_p = 0;
@@ -230,8 +272,8 @@ void remove_inode_from_file (struct inode * ino_p)
 
     void * addr = map->addr;
 
-    pageno = (ino_p->ino) / 7;
-    index = (ino_p->ino % 7) + 1;
+    pageno = (ino_p->ino) / 15;
+    index = (ino_p->ino % 15) + 1;
 
     addr = (void *)((char *)addr + pageno * PAGE_SIZE + index * sizeof(struct inode));
     memset(addr, 0, sizeof(struct inode));
@@ -243,8 +285,8 @@ void add_inode_to_file (struct inode * ino_p)
     int index = 0;
     void * addr = map->addr;
 
-    pageno = (ino_p->ino) / 7;
-    index = (ino_p->ino % 7) + 1; //Skipping metadata on top of the page
+    pageno = (ino_p->ino) / 15;
+    index = (ino_p->ino % 15) + 1; //Skipping metadata on top of the page
 
     addr = (void *) ((char *)addr + pageno * PAGE_SIZE + index * sizeof(struct inode)); 
     memcpy(addr, (void *)ino_p, sizeof(struct inode));
@@ -592,7 +634,7 @@ struct inode * get_inode_from_path(const char * path)
         for (bitpos = 0; bitpos < 15; bitpos++) 
         {
             if ((ino_m->bitmap >> bitpos) & 1) {
-            ino = (struct inode *)((char *) root_inode + 
+            ino = (struct inode *)((char *) root_inode + pages*PAGE_SIZE +  
                                    (bitpos * sizeof(struct inode))); 
 
             if(!strcmp(ino->path_name, path)) {
@@ -619,6 +661,7 @@ static struct fuse_operations ramdisk_oper = {
     .unlink      = ramdisk_unlink,
     .create      = ramdisk_create,
     .opendir     = ramdisk_opendir,
+    .truncate    = ramdisk_truncate,
 };
 
 int init_ramfs (int argc, char *argv[])
@@ -642,13 +685,13 @@ int init_ramfs (int argc, char *argv[])
     //if (argc == 4) {
     if (argc == 6) {  /*For debugging with gdb */
         /*Filename is provided */
-        fd = open(argv[3], O_RDWR);
+        fd = open(argv[5], O_RDWR);
         //fd = open(argv[5], O_RDWR);
         if (fd < 0) {
             if (errno == ENOENT) {
                 /*Create the file*/
                 //fd = open(argv[3], O_RDWR | O_CREAT, 0666);
-                fd = open(argv[5], O_RDWR | O_CREAT, 0666);
+                fd = open(argv[5], O_RDWR | O_CREAT | O_TRUNC, 0666);
             } else {
                 handle_error(strerror(errno));
             }
@@ -720,6 +763,7 @@ void init_root_ino_meta() {
     struct ino_metadata * ino_m = (struct ino_metadata *)addr;
     if (image_read) {
         data_pages = pages - ino_m->metadatapages;
+        metadata_pages = ino_m->metadatapages;
         init_datapages(ino_m->datapages); /* Extra pages if any */
     } else {
         ino_m->bitmap |= 1;
@@ -763,5 +807,9 @@ int main(int argc, char *argv[])
     //printf("Size %lu\n", sizeof(struct inode));
     //return 0;
     //strcpy(argv[1], argv[3]);
-    return fuse_main(4, argv, &ramdisk_oper, NULL);
+    fuse_main(4, argv, &ramdisk_oper, NULL);
+    msync(map->addr, map->size, MS_SYNC);
+    free(map);
+    return 0;
+
 }
