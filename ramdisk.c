@@ -30,8 +30,6 @@ static int ramdisk_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
     /* Get all children */
     if (!errno) 
     { 
-        strncpy(path_copy, ino->path_name, PATH_MAX);
-
         if (ino->ftype == 1) /* Its a file */
         {
             filler(buf, basename(path_copy), NULL, 0);
@@ -42,7 +40,8 @@ static int ramdisk_readdir(const char *path, void *buf, fuse_fill_dir_t filler, 
             child_ino = ino->child_ino;
             while (child_ino != 0) { /* Root inode can not be child of anyone */
                 ino_c = get_inode_from_number(child_ino);
-                filler(buf, basename(ino_c->path_name), NULL, 0);
+                strncpy(path_copy, ino_c->path_name, PATH_MAX);
+                filler(buf, basename(path_copy), NULL, 0);
                 child_ino = ino_c->sibling_ino;
             }
         }
@@ -62,13 +61,13 @@ static int ramdisk_getattr(const char* path, struct stat* stbuf)
     stbuf->st_dev = 13;
     if ((ino = get_inode_from_path(path)) > 0) {
         if (ino->ftype == 1) {
-            stbuf->st_mode = S_IFREG | 0644;
+            stbuf->st_mode = S_IFREG | 0777;
             stbuf->st_nlink = 1;
             stbuf->st_size = ino->size;
             stbuf->st_blocks = ino->num_blocks;
             stbuf->st_blksize = BLOCK_SIZE;
         } else {
-            stbuf->st_mode = S_IFDIR | 0755;
+            stbuf->st_mode = S_IFDIR | 0777;
             stbuf->st_nlink = 2;
             stbuf->st_size = sizeof(struct inode);
             stbuf->st_blocks = 0;
@@ -100,12 +99,12 @@ static int ramdisk_rmdir(const char * path)
 
     remove_from_child_list(par_ino_p, ino_p->ino);
 
-    /*Remove from file*/
-    remove_inode_from_file(ino_p);
-
     /*Remove metadata*/
     ino_m = get_metadata_from_num(ino_p->ino);
     update_metadata_del(ino_m, ino_p->ino);
+    
+    /*Remove from file*/
+    remove_inode_from_file(ino_p);
 
     return 0;
 
@@ -126,12 +125,13 @@ static int ramdisk_unlink(const char * path)
 
     remove_from_child_list(par_ino_p, ino_p->ino);
 
-    /*Remove from file*/
-    remove_inode_from_file(ino_p);
 
     /*Remove metadata*/
     ino_m = get_metadata_from_num(ino_p->ino);
     update_metadata_del(ino_m, ino_p->ino);
+    
+    /*Remove from file*/
+    remove_inode_from_file(ino_p);
 
     return 0;
 
@@ -154,8 +154,7 @@ static int ramdisk_mkdir(const char * path, mode_t mode)
     par_ino_p = get_inode_from_path(dirname(parent_dir));
     if (!par_ino_p) return -EINVAL;
     if (par_ino_p->ftype == 1) return -ENOTDIR;
-    if (ino_p->parent_ino != par_ino_p->ino) return -EINVAL;
-
+    
     ino_num = find_free_inode_num();
     if (ino_num) {
         ino_p = (struct inode *) calloc(1, sizeof(struct inode));
@@ -197,7 +196,6 @@ static int ramdisk_create(const char * path, mode_t mode, struct fuse_file_info 
     par_ino_p = get_inode_from_path(dirname(parent_dir));
     if (!par_ino_p) return -EINVAL;
     if (par_ino_p->ftype == 1) return -ENOTDIR;
-    if (ino_p->parent_ino != par_ino_p->ino) return -EINVAL;
 
     ino_num = find_free_inode_num();
     if (ino_num) {
@@ -274,8 +272,13 @@ void add_to_child_list (struct inode * par_ino, uint16_t new_child)
 void remove_from_child_list (struct inode * par_ino, uint16_t deleted_child)
 {
     uint16_t child = 0;
-    struct inode * ino_c = 0;
+    struct inode * ino_c = 0, * del_child = 0;
+    
     child = par_ino->child_ino;
+
+    if (child != 0) del_child = get_inode_from_number(deleted_child); 
+
+/* If deleted child has a sibling, then the chain must not be broken*/
 
     while (child != deleted_child) {
         ino_c = get_inode_from_number(child);
@@ -283,9 +286,9 @@ void remove_from_child_list (struct inode * par_ino, uint16_t deleted_child)
     }
 
     if (ino_c) { 
-        ino_c->sibling_ino = 0;
+        ino_c->sibling_ino = del_child->sibling_ino;
     } else {
-        par_ino->child_ino = 0;
+        par_ino->child_ino = del_child->sibling_ino;
     }
 }
 
@@ -306,7 +309,7 @@ void update_metadata_del (struct ino_metadata * ino_m, uint16_t ino)
     bitpos = ino % 15; /* 15 inodes per page 0-14 */
 
     if ((ino_m->bitmap >> bitpos) & 1) {
-        ino_m->bitmap &= 1 << bitpos;
+        ino_m->bitmap &= ~(1 << bitpos);
     }
 }
 
@@ -326,7 +329,7 @@ static int ramdisk_write(const char *path, const char *buf, size_t size, off_t o
     int rc = 0;
     size_t sz = size;
     size_t new_size = 0;
-    struct inode *ino = get_inode_from_number((int) fi->fh);
+    struct inode *ino = get_inode_from_path(path);
     if (size == 0) return 0;
 
     if (offset >= ino->size) {
@@ -360,7 +363,7 @@ static int write_bytes_from_oft(struct inode *ino, char * buf, int offset_block_
     char rcv_buf[BLOCK_SIZE];
     memset(rcv_buf, 0, BLOCK_SIZE);
 
-    if (offset) {
+    //if (offset) {
         /* If bytes can not outfill the block */
         if (bytes < (BLOCK_SIZE - (offset % BLOCK_SIZE))) {
             min = bytes;
@@ -373,7 +376,7 @@ static int write_bytes_from_oft(struct inode *ino, char * buf, int offset_block_
         bytes = bytes - min;
         bytes_written = min;
         if (bytes == 0) return bytes_written;
-    }
+    //}
 
     for (i = offset_block_ind + 1; i < ino->num_blocks; i++)
     {
@@ -437,19 +440,20 @@ static int allocate_blocks(struct inode *ino, size_t old_size, size_t new_size)
 static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) 
 {
     int block = 0;
-    size_t sz = size;
     size_t bytes_read = 0;
     char rcv_buf[BLOCK_SIZE];
     memset(rcv_buf, 0, BLOCK_SIZE);
-    struct inode *ino = get_inode_from_number((int) fi->fh);
+    struct inode *ino = get_inode_from_path(path);
     if (offset >= ino->size) return 0;
+    
+    if (offset + size >= ino->size) size = ino->size - offset;
     if (size == 0) return 0;
 
     /* If size > BLOCK_SIZE then num_blocks > 1 */
     while (block < ino->num_blocks - 1) {
         fetch_data_from_block(rcv_buf, block, BLOCK_SIZE);
         memcpy(buf + bytes_read, rcv_buf, BLOCK_SIZE);
-        sz -= BLOCK_SIZE;
+        size -= BLOCK_SIZE;
         bytes_read += BLOCK_SIZE;
         block++;
         /* If the next block exists, then the assumption is that the current block is full */
@@ -457,9 +461,9 @@ static int ramdisk_read(const char *path, char *buf, size_t size, off_t offset, 
 
     memset(rcv_buf, 0, BLOCK_SIZE);
     /* Last block */
-    fetch_data_from_block(rcv_buf, ino->block_list[ino->num_blocks - 1], sz);
-    memcpy(buf + bytes_read, rcv_buf, sz);
-    bytes_read += sz;
+    fetch_data_from_block(rcv_buf, ino->block_list[ino->num_blocks - 1], size);
+    memcpy(buf + bytes_read, rcv_buf, size);
+    bytes_read += size;
     return bytes_read;
 }
 
@@ -487,11 +491,13 @@ int find_free_inode_num() {
     while(pageno < metadata_pages)
     {
         ino_m = (struct ino_metadata *)((char *)addr + (pageno * PAGE_SIZE));
-        for (bitpos = 0; (!((ino_m->bitmap >> bitpos) & 1)) && (bitpos < 15); bitpos++) 
+        for (bitpos = 0; bitpos < 15; bitpos++) 
         {
-            return ((pageno * 15) + bitpos);
+            if (((ino_m->bitmap >> bitpos) & 1) == 0)
+                return ((pageno * 15) + bitpos);
 
         }
+        pageno++;
     }
 
     return 0;
@@ -506,9 +512,10 @@ int find_free_block_num() {
 
     while(pageno < data_pages) {
         pgm = (struct page_metadata *)((char *)addr + (pageno * PAGE_SIZE));
-        for (bitpos = 0; (!((pgm->bitmap >> bitpos) & 1)) && (bitpos < 7); bitpos++) 
+        for (bitpos = 0; bitpos < 7; bitpos++) 
         {
-            return (((pageno - metadata_pages) * 7) + bitpos);
+            if(!((pgm->bitmap >> bitpos) & 1))
+                return (((pageno - metadata_pages) * 7) + bitpos);
 
         }
         pageno++;
@@ -522,7 +529,8 @@ void fetch_data_from_block(char * buf, int blocknum, size_t size)
     int pageno = metadata_pages + (blocknum / 7);
     int index = (blocknum % 7) + 1; //Skipping page metadata
     void * addr = map->addr;
-    char * bl_p = (char *) addr + (pageno * PAGE_SIZE) + (index * BLOCK_SIZE);
+    void * bl_p = (void *)((char *) addr + (pageno * PAGE_SIZE) + (index * BLOCK_SIZE));
+    if (size > BLOCK_SIZE) size = BLOCK_SIZE;
     memcpy(buf, bl_p, size);
 }
 
@@ -531,15 +539,18 @@ void write_data_to_block(char *buf, int blocknum, size_t size)
     int pageno = metadata_pages + (blocknum / 7);
     int index = (blocknum % 7) + 1; //Skipping page metadata
     void * addr = map->addr;
-    char * bl_p = (char *) addr + (pageno * PAGE_SIZE) + (index * BLOCK_SIZE);
+    void * bl_p = (void *) ((char *) addr + (pageno * PAGE_SIZE) + (index * BLOCK_SIZE));
+    if (size > BLOCK_SIZE) size = BLOCK_SIZE;
     memcpy(bl_p, buf, size);
 }
 
 static int ramdisk_open(const char *path, struct fuse_file_info *fi) 
 {
     //if((fi->flags & 3) != O_RDONLY) return -EACCES;
-    if (get_inode_from_path(path)) return 0; 
-    else return -ENOENT;
+    //struct inode * ino = 0;
+    //ino = get_inode_from_path(path);
+    //fi->fh = ino->ino;  
+    return 0;
 }
 
 static int ramdisk_opendir(const char *path, struct fuse_file_info *fi) 
@@ -558,7 +569,7 @@ struct inode * get_inode_from_number(int ino)
 {
     struct inode *ino_p = 0;
     int page_no = ino / 15; // 15 inodes per page
-    int index = (ino % 15) + 1; //Skipping metadata
+    int index = (ino % 15); //Skipping metadata
     ino_p = (struct inode *) ((char *)root_inode + (page_no * PAGE_SIZE) + (index * sizeof(struct inode)));
     return ino_p; 
 }
@@ -578,15 +589,17 @@ struct inode * get_inode_from_path(const char * path)
             pages++;
             continue;
         }
-        for (bitpos = 0; ((ino_m->bitmap >> bitpos) & 1) && (bitpos < 15); bitpos++) 
+        for (bitpos = 0; bitpos < 15; bitpos++) 
         {
+            if ((ino_m->bitmap >> bitpos) & 1) {
             ino = (struct inode *)((char *) root_inode + 
                                    (bitpos * sizeof(struct inode))); 
 
             if(!strcmp(ino->path_name, path)) {
                 errno = 0;
                 return ino;
-            } 
+            }
+          } 
 
         }
         pages++;
@@ -596,8 +609,6 @@ struct inode * get_inode_from_path(const char * path)
 }
 
 static struct fuse_operations ramdisk_oper = {
-    //.init        = ramdisk_init,
-    //.destroy     = ramdisk_destroy,
     .read        = ramdisk_read,
     .open        = ramdisk_open,
     .write       = ramdisk_write,
@@ -608,41 +619,6 @@ static struct fuse_operations ramdisk_oper = {
     .unlink      = ramdisk_unlink,
     .create      = ramdisk_create,
     .opendir     = ramdisk_opendir,
-    /*    .getattr     = ramdisk_getattr,
-          .fgetattr    = ramdisk_fgetattr,
-          .access      = ramdisk_access,
-          .readlink    = ramdisk_readlink,
-          .mknod       = ramdisk_mknod,
-          .mkdir       = ramdisk_mkdir,
-          .symlink     = ramdisk_symlink,
-          .unlink      = ramdisk_unlink,
-          .rename      = ramdisk_rename,
-          .link        = ramdisk_link,
-          .chmod       = ramdisk_chmod,
-          .chown       = ramdisk_chown,
-          .truncate    = ramdisk_truncate,
-          .ftruncate   = ramdisk_ftruncate,
-          .utimens     = ramdisk_utimens,
-          .open        = ramdisk_open,
-          .read        = ramdisk_read,
-          .write       = ramdisk_write,
-          .statfs      = ramdisk_statfs,
-          .release     = ramdisk_release,
-          .releasedir  = ramdisk_releasedir,
-          .fsync       = ramdisk_fsync,
-          .flush       = ramdisk_flush,
-          .fsyncdir    = ramdisk_fsyncdir,
-          .lock        = ramdisk_lock,
-          .bmap        = ramdisk_bmap,
-          .ioctl       = ramdisk_ioctl,
-          .poll        = ramdisk_poll,
-#ifdef HAVE_SETXATTR
-.setxattr    = ramdisk_setxattr,
-.getxattr    = ramdisk_getxattr,
-.listxattr   = ramdisk_listxattr,
-.removexattr = ramdisk_removexattr,
-#endif
-.flag_nullpath_ok = 0,           */    
 };
 
 int init_ramfs (int argc, char *argv[])
@@ -651,7 +627,10 @@ int init_ramfs (int argc, char *argv[])
     //off_t len = 0;
     void * addr = 0;
     int fd = -1;
-    off_t size = atoi(argv[2]) * 1024 * 1024;
+
+    //argc = argc - 2;
+    //off_t size = atoi(argv[2]) * 1024 * 1024;
+    off_t size = atoi(argv[4]) * 1024 * 1024;
     printf ("size %llu\n", (long long unsigned int)size);
     memset(&sb, 0, sizeof(struct stat));
 
@@ -660,13 +639,16 @@ int init_ramfs (int argc, char *argv[])
         return -1;
 
     }
-    if (argc == 4) {
+    //if (argc == 4) {
+    if (argc == 6) {  /*For debugging with gdb */
         /*Filename is provided */
         fd = open(argv[3], O_RDWR);
+        //fd = open(argv[5], O_RDWR);
         if (fd < 0) {
             if (errno == ENOENT) {
                 /*Create the file*/
-                fd = open(argv[3], O_RDWR | O_CREAT, 0666);
+                //fd = open(argv[3], O_RDWR | O_CREAT, 0666);
+                fd = open(argv[5], O_RDWR | O_CREAT, 0666);
             } else {
                 handle_error(strerror(errno));
             }
@@ -674,7 +656,8 @@ int init_ramfs (int argc, char *argv[])
         } else {
             image_read = 1;
         }
-    } else if (argc == 3) {
+   //} else if (argc == 3) { 
+    } else if (argc == 5) { /* For debugging with gdb*/
         /* If the optional filename argument is not provided, we use a temporary file */
         /* A tempfile is mmaped */
         image_read = 0;
@@ -694,7 +677,7 @@ int init_ramfs (int argc, char *argv[])
         fprintf(stderr, "File system is larger than specified size. Current size is %uMB\n", (unsigned int) sb.st_size / (1024 * 1024));
         return -1;
     } 
-    if ((addr = mmap(0, sb.st_size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0)) < 0) {
+    if ((addr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)) < 0) {
         handle_error(strerror(errno));
     }
     close(fd);
@@ -702,7 +685,7 @@ int init_ramfs (int argc, char *argv[])
     map = (struct mem_map *) calloc (1, sizeof(*map));
     if (map < 0) handle_error(strerror(errno));
     map->addr = addr;
-    map->size = sb.st_size;
+    map->size = size;
 
     return 0;
 }
@@ -754,7 +737,7 @@ void init_root_ino () {
 }
 
 void init_globals(int size) {
-    gsize = size;
+    gsize = size * 1024 * 1024;
     pages = gsize / PAGE_SIZE;
     if (!image_read) {
         metadata_pages = pages / 128; /* for a 512 MB fs, 4MB is for metadata. Min fs size is 512 KB */
@@ -772,12 +755,13 @@ void init_globals(int size) {
 
 int main(int argc, char *argv[])
 {
-    printf("Size %lu\n", sizeof(struct inode));
-    printf("Ino_meta %lu\n", sizeof(struct ino_metadata));
-    printf("page %lu\n", sizeof(struct page_metadata));
+    //printf("Size %lu\n", sizeof(struct inode));
+    //printf("Ino_meta %lu\n", sizeof(struct ino_metadata));
+    //printf("page %lu\n", sizeof(struct page_metadata));
     init_ramfs(argc, argv);
-    init_globals(atoi(argv[2]));
-    printf("Size %lu\n", sizeof(struct inode));
-    return 0;
-    //return fuse_main(argc, argv, &ramdisk_oper, NULL);
+    init_globals(atoi(argv[4]));
+    //printf("Size %lu\n", sizeof(struct inode));
+    //return 0;
+    //strcpy(argv[1], argv[3]);
+    return fuse_main(4, argv, &ramdisk_oper, NULL);
 }
