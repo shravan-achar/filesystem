@@ -14,7 +14,7 @@
 #include <libgen.h>
 
 #define PAGE_SIZE 4096    /*Bytes */
-#define BLOCK_SIZE 512    /*Bytes */
+#define BLOCK_SIZE 1024    /*Bytes */
 #define PATH_MAX 127      /* Bytes */
 
 #define handle_error(msg) \
@@ -54,7 +54,7 @@ struct inode {
     uint16_t parent_ino; /* Parent inode number*/
     uint16_t sibling_ino; /* Next inode sharing the same parent */
     uint32_t num_blocks; /* Number of data blocks */
-    uint32_t block_list[24]; /* list of block numbers containing data
+    uint32_t block_list[88]; /* list of block numbers containing data
                                 Numbering starts from 1 */
     uint8_t  itype;    /* Direct or indirect inode */
     uint16_t next_ino; /* If itype is set then this is valid 

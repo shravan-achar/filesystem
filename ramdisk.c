@@ -272,8 +272,8 @@ void remove_inode_from_file (struct inode * ino_p)
 
     void * addr = map->addr;
 
-    pageno = (ino_p->ino) / 15;
-    index = (ino_p->ino % 15) + 1;
+    pageno = (ino_p->ino) / 7;
+    index = (ino_p->ino % 7) + 1;
 
     addr = (void *)((char *)addr + pageno * PAGE_SIZE + index * sizeof(struct inode));
     memset(addr, 0, sizeof(struct inode));
@@ -285,8 +285,8 @@ void add_inode_to_file (struct inode * ino_p)
     int index = 0;
     void * addr = map->addr;
 
-    pageno = (ino_p->ino) / 15;
-    index = (ino_p->ino % 15) + 1; //Skipping metadata on top of the page
+    pageno = (ino_p->ino) / 7;
+    index = (ino_p->ino % 7) + 1; //Skipping metadata on top of the page
 
     addr = (void *) ((char *)addr + pageno * PAGE_SIZE + index * sizeof(struct inode)); 
     memcpy(addr, (void *)ino_p, sizeof(struct inode));
@@ -337,7 +337,7 @@ void remove_from_child_list (struct inode * par_ino, uint16_t deleted_child)
 void update_metadata_add (struct ino_metadata * ino_m, uint16_t ino)
 {
     int bitpos = 0;
-    bitpos = ino % 15; /* 15 inodes per page */
+    bitpos = ino % 7; /* 7 inodes per page */
 
     if (!((ino_m->bitmap >> bitpos) & 1)) {
         ino_m->bitmap |= 1 << bitpos;
@@ -348,7 +348,7 @@ void update_metadata_add (struct ino_metadata * ino_m, uint16_t ino)
 void update_metadata_del (struct ino_metadata * ino_m, uint16_t ino)
 {
     int bitpos = 0;
-    bitpos = ino % 15; /* 15 inodes per page 0-14 */
+    bitpos = ino % 7; /* 7 inodes per page 0-14 */
 
     if ((ino_m->bitmap >> bitpos) & 1) {
         ino_m->bitmap &= ~(1 << bitpos);
@@ -360,7 +360,7 @@ struct ino_metadata * get_metadata_from_num (uint16_t ino)
     int page = 0;
     void * addr = map->addr;
     struct ino_metadata * ino_m = 0;
-    page = (ino / 15); /* 15 Inodes per page */
+    page = (ino / 7); /* 7 Inodes per page */
 
     ino_m = (struct ino_metadata *) ((char *)addr + (page * PAGE_SIZE));
     return ino_m;
@@ -533,10 +533,10 @@ int find_free_inode_num() {
     while(pageno < metadata_pages)
     {
         ino_m = (struct ino_metadata *)((char *)addr + (pageno * PAGE_SIZE));
-        for (bitpos = 0; bitpos < 15; bitpos++) 
+        for (bitpos = 0; bitpos < 7; bitpos++) 
         {
             if (((ino_m->bitmap >> bitpos) & 1) == 0)
-                return ((pageno * 15) + bitpos);
+                return ((pageno * 7) + bitpos);
 
         }
         pageno++;
@@ -554,10 +554,10 @@ int find_free_block_num() {
 
     while(pageno < data_pages) {
         pgm = (struct page_metadata *)((char *)addr + (pageno * PAGE_SIZE));
-        for (bitpos = 0; bitpos < 7; bitpos++) 
+        for (bitpos = 0; bitpos < 3; bitpos++) 
         {
             if(!((pgm->bitmap >> bitpos) & 1))
-                return (((pageno - metadata_pages) * 7) + bitpos);
+                return (((pageno - metadata_pages) * 3) + bitpos);
 
         }
         pageno++;
@@ -568,8 +568,8 @@ int find_free_block_num() {
 void fetch_data_from_block(char * buf, int blocknum, size_t size)
 {
     memset(buf, 0, BLOCK_SIZE);
-    int pageno = metadata_pages + (blocknum / 7);
-    int index = (blocknum % 7) + 1; //Skipping page metadata
+    int pageno = metadata_pages + (blocknum / 3);
+    int index = (blocknum % 3) + 1; //Skipping page metadata
     void * addr = map->addr;
     void * bl_p = (void *)((char *) addr + (pageno * PAGE_SIZE) + (index * BLOCK_SIZE));
     if (size > BLOCK_SIZE) size = BLOCK_SIZE;
@@ -578,8 +578,8 @@ void fetch_data_from_block(char * buf, int blocknum, size_t size)
 
 void write_data_to_block(char *buf, int blocknum, size_t size)
 {
-    int pageno = metadata_pages + (blocknum / 7);
-    int index = (blocknum % 7) + 1; //Skipping page metadata
+    int pageno = metadata_pages + (blocknum / 3);
+    int index = (blocknum % 3) + 1; //Skipping page metadata
     void * addr = map->addr;
     void * bl_p = (void *) ((char *) addr + (pageno * PAGE_SIZE) + (index * BLOCK_SIZE));
     if (size > BLOCK_SIZE) size = BLOCK_SIZE;
@@ -610,8 +610,8 @@ static int ramdisk_opendir(const char *path, struct fuse_file_info *fi)
 struct inode * get_inode_from_number(int ino)
 {
     struct inode *ino_p = 0;
-    int page_no = ino / 15; // 15 inodes per page
-    int index = (ino % 15); //Skipping metadata
+    int page_no = ino / 7; // 7 inodes per page
+    int index = (ino % 7); //Skipping metadata
     ino_p = (struct inode *) ((char *)root_inode + (page_no * PAGE_SIZE) + (index * sizeof(struct inode)));
     return ino_p; 
 }
@@ -631,7 +631,7 @@ struct inode * get_inode_from_path(const char * path)
             pages++;
             continue;
         }
-        for (bitpos = 0; bitpos < 15; bitpos++) 
+        for (bitpos = 0; bitpos < 7; bitpos++) 
         {
             if ((ino_m->bitmap >> bitpos) & 1) {
             ino = (struct inode *)((char *) root_inode + pages*PAGE_SIZE +  
@@ -667,31 +667,33 @@ static struct fuse_operations ramdisk_oper = {
 int init_ramfs (int argc, char *argv[])
 {
     struct stat sb;
-    //off_t len = 0;
+    off_t size = 0;
     void * addr = 0;
     int fd = -1;
 
-    //argc = argc - 2;
-    //off_t size = atoi(argv[2]) * 1024 * 1024;
-    off_t size = atoi(argv[4]) * 1024 * 1024;
-    printf ("size %llu\n", (long long unsigned int)size);
+    //off_t size = atoi(argv[4]) * 1024 * 1024;
+    //printf ("size %llu\n", (long long unsigned int)size);
     memset(&sb, 0, sizeof(struct stat));
 
     if (argc < 3) {
-        fprintf (stderr, "usage: %s <mount_point> <size> [filename]", argv[0]);
-        return -1;
+        fprintf (stderr, "usage: %s <mount_point> <size> [filename]\n", argv[0]);
+        exit(-1);
 
     }
-    //if (argc == 4) {
-    if (argc == 6) {  /*For debugging with gdb */
+    
+    //argc = argc - 2;
+    size = atoi(argv[2]) * 1024 * 1024;
+    
+    if (argc == 4) {
+    //if (argc == 6) {  /*For debugging with gdb */
         /*Filename is provided */
-        fd = open(argv[5], O_RDWR);
         //fd = open(argv[5], O_RDWR);
+        fd = open(argv[3], O_RDWR);
         if (fd < 0) {
             if (errno == ENOENT) {
                 /*Create the file*/
-                //fd = open(argv[3], O_RDWR | O_CREAT, 0666);
-                fd = open(argv[5], O_RDWR | O_CREAT | O_TRUNC, 0666);
+                fd = open(argv[3], O_RDWR | O_CREAT, 0666);
+                //fd = open(argv[5], O_RDWR | O_CREAT | O_TRUNC, 0666);
             } else {
                 handle_error(strerror(errno));
             }
@@ -699,8 +701,8 @@ int init_ramfs (int argc, char *argv[])
         } else {
             image_read = 1;
         }
-   //} else if (argc == 3) { 
-    } else if (argc == 5) { /* For debugging with gdb*/
+   } else if (argc == 3) { 
+    //} else if (argc == 5) { /* For debugging with gdb*/
         /* If the optional filename argument is not provided, we use a temporary file */
         /* A tempfile is mmaped */
         image_read = 0;
@@ -712,11 +714,11 @@ int init_ramfs (int argc, char *argv[])
         handle_error(strerror(errno));
     }
     if (sb.st_size < size) {
-        if (ftruncate(fd, size + (1 * 1024 * 1024)) < 0) {
+        if (ftruncate(fd, size + (2 * 1024 * 1024)) < 0) {
             /* This is bad */
             handle_error(strerror(errno));
         }
-    } else if (sb.st_size > size + 1*1024*1024) {
+    } else if (sb.st_size > size + 2*1024*1024) {
         fprintf(stderr, "File system is larger than specified size. Current size is %uMB\n", (unsigned int) sb.st_size / (1024 * 1024));
         exit(-1);
     } 
@@ -795,7 +797,7 @@ void init_globals(int size) {
         init_root_ino();
         init_root_ino_meta();
     }
-    space_waste = data_pages * 511 + metadata_pages * 254;
+    space_waste = data_pages * 1024 + metadata_pages * 511;
 }
 
 int main(int argc, char *argv[])
@@ -804,11 +806,11 @@ int main(int argc, char *argv[])
     //printf("Ino_meta %lu\n", sizeof(struct ino_metadata));
     //printf("page %lu\n", sizeof(struct page_metadata));
     init_ramfs(argc, argv);
-    init_globals(atoi(argv[4]));
-    //printf("Size %lu\n", sizeof(struct inode));
+    init_globals(atoi(argv[2]));
+    //printf("size %lu\n", sizeof(struct inode));
     //return 0;
     //strcpy(argv[1], argv[3]);
-    fuse_main(4, argv, &ramdisk_oper, NULL);
+    fuse_main(2, argv, &ramdisk_oper, NULL);
     msync(map->addr, map->size, MS_SYNC);
     free(map);
     return 0;
